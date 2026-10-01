@@ -1,4 +1,69 @@
-      - name: Find built application
+name: Build HNStudio Musik AI
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows Release x64
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Check project
+        shell: pwsh
+        run: |
+          if (!(Test-Path "CMakeLists.txt")) {
+            Write-Error "CMakeLists.txt not found"
+            exit 1
+          }
+
+          if (!(Test-Path "Source")) {
+            Write-Error "Source folder not found"
+            exit 1
+          }
+
+          Write-Host "Project OK"
+
+      - name: Configure CMake
+        shell: pwsh
+        run: |
+          if (Test-Path "build") {
+            Remove-Item "build" -Recurse -Force
+          }
+
+          cmake -S . -B build -A x64 -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "CMake configure failed"
+            exit $LASTEXITCODE
+          }
+
+      - name: Build Release
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Build failed"
+            exit $LASTEXITCODE
+          }
+
+      - name: Find application
         shell: pwsh
         run: |
           Write-Host "Searching for application EXE..."
@@ -16,13 +81,14 @@
 
           Write-Host ""
           Write-Host "EXE files found:"
-          $files | ForEach-Object {
-            Write-Host $_.FullName
-          }
 
           if ($files.Count -eq 0) {
             Write-Error "No application EXE was generated."
             exit 1
+          }
+
+          foreach ($file in $files) {
+            Write-Host $file.FullName
           }
 
           $exe = $files |
@@ -39,12 +105,86 @@
           Write-Host "Selected application:"
           Write-Host $exe.FullName
 
-          New-Item `
-            -ItemType Directory `
-            -Path "package" `
-            -Force | Out-Null
+          if (Test-Path "package") {
+            Remove-Item "package" -Recurse -Force
+          }
+
+          New-Item -ItemType Directory -Path "package" -Force | Out-Null
 
           Copy-Item `
             $exe.FullName `
             "package\HNStudio-Musik-AI.exe" `
             -Force
+
+      - name: Copy Assets
+        shell: pwsh
+        run: |
+          if (Test-Path "Assets") {
+            Copy-Item `
+              "Assets" `
+              "package\Assets" `
+              -Recurse `
+              -Force
+          }
+
+      - name: Check Debug Runtime
+        shell: pwsh
+        run: |
+          $exe = "package\HNStudio-Musik-AI.exe"
+
+          if (!(Test-Path $exe)) {
+            Write-Error "Final EXE not found"
+            exit 1
+          }
+
+          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
+
+          if ($null -eq $dumpbin) {
+            Write-Host "dumpbin unavailable"
+            exit 0
+          }
+
+          dumpbin /DEPENDENTS $exe | Out-File dependencies.txt
+
+          Write-Host ""
+          Write-Host "Dependencies:"
+          Get-Content dependencies.txt
+
+          $debugRuntime = Select-String `
+            -Path dependencies.txt `
+            -Pattern "ucrtbased.dll|vcruntime.*d.dll|msvcp.*d.dll"
+
+          if ($debugRuntime) {
+            Write-Error "Debug CRT dependency detected"
+            exit 1
+          }
+
+          Write-Host ""
+          Write-Host "No Debug CRT dependency found."
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          $zip = "HNStudio-Musik-AI-Windows-x64.zip"
+
+          if (Test-Path $zip) {
+            Remove-Item $zip -Force
+          }
+
+          Compress-Archive `
+            -Path "package\*" `
+            -DestinationPath $zip `
+            -CompressionLevel Optimal `
+            -Force
+
+          Write-Host ""
+          Write-Host "ZIP created:"
+          Write-Host $zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HNStudio-Musik-AI-Windows-x64
+          path: HNStudio-Musik-AI-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
