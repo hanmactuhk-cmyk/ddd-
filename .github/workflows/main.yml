@@ -24,16 +24,6 @@ jobs:
         with:
           arch: x64
 
-      - name: Check tools
-        shell: pwsh
-        run: |
-          Write-Host "MSVC:"
-          where.exe cl
-
-          Write-Host ""
-          Write-Host "CMake:"
-          cmake --version
-
       - name: Verify project
         shell: pwsh
         run: |
@@ -49,7 +39,7 @@ jobs:
 
           Write-Host "Project structure OK"
 
-      - name: Configure Release
+      - name: Configure CMake
         shell: pwsh
         run: |
           if (Test-Path "build") {
@@ -64,84 +54,55 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "CMake configure failed"
             exit $LASTEXITCODE
           }
 
-      - name: Build Release
+      - name: Build HNStudio Musik AI
         shell: pwsh
         run: |
           cmake `
             --build build `
             --config Release `
+            --target HNStudioMusikAI `
             --parallel
 
           if ($LASTEXITCODE -ne 0) {
-            Write-Error "Release build failed"
             exit $LASTEXITCODE
           }
 
-      - name: Find application
+      - name: Find HNStudio Musik AI EXE
         shell: pwsh
         run: |
-          Write-Host "Searching for EXE..."
+          Write-Host "Searching for HNStudioMusikAI.exe..."
 
-          $files = Get-ChildItem `
+          $exe = Get-ChildItem `
             -Path "build" `
-            -Filter "*.exe" `
+            -Filter "HNStudioMusikAI.exe" `
             -Recurse `
             -File |
-            Where-Object {
-              $_.Name -notmatch "uninstall"
-            }
+            Select-Object -First 1
 
-          if ($files.Count -eq 0) {
-            Write-Error "No EXE was generated"
+          if ($null -eq $exe) {
+            Write-Error "HNStudioMusikAI.exe was not generated."
 
-            Write-Host "Build contents:"
-            Get-ChildItem "build" -Recurse |
+            Write-Host "EXE files found:"
+            Get-ChildItem `
+              -Path "build" `
+              -Filter "*.exe" `
+              -Recurse `
+              -File |
               Select-Object FullName
 
             exit 1
           }
 
-          Write-Host "EXE files found:"
-          $files | ForEach-Object {
-            Write-Host $_.FullName
-          }
-
-      - name: Prepare package
-        shell: pwsh
-        run: |
-          if (Test-Path "package") {
-            Remove-Item "package" -Recurse -Force
-          }
+          Write-Host "Correct application found:"
+          Write-Host $exe.FullName
 
           New-Item `
             -ItemType Directory `
             -Path "package" `
             -Force | Out-Null
-
-      - name: Copy application
-        shell: pwsh
-        run: |
-          $exe = Get-ChildItem `
-            -Path "build" `
-            -Filter "*.exe" `
-            -Recurse `
-            -File |
-            Where-Object {
-              $_.Name -notmatch "uninstall"
-            } |
-            Select-Object -First 1
-
-          if ($null -eq $exe) {
-            Write-Error "Application EXE not found"
-            exit 1
-          }
-
-          Write-Host "Using:"
-          Write-Host $exe.FullName
 
           Copy-Item `
             $exe.FullName `
@@ -159,66 +120,44 @@ jobs:
               -Force
           }
 
-      - name: Copy README
-        shell: pwsh
-        run: |
-          if (Test-Path "README.md") {
-            Copy-Item `
-              "README.md" `
-              "package\README.md" `
-              -Force
-          }
-
-      - name: Check Debug Runtime dependency
+      - name: Verify application
         shell: pwsh
         run: |
           $exe = "package\HNStudio-Musik-AI.exe"
 
           if (!(Test-Path $exe)) {
-            Write-Error "EXE not found"
+            Write-Error "HNStudio-Musik-AI.exe not found"
             exit 1
           }
 
-          Write-Host "Checking for Debug CRT..."
+          Get-Item $exe | Select-Object FullName, Length
+
+      - name: Check Debug CRT
+        shell: pwsh
+        run: |
+          $exe = "package\HNStudio-Musik-AI.exe"
 
           $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
 
-          if ($null -ne $dumpbin) {
-            dumpbin /DEPENDENTS $exe | Out-File "dependencies.txt"
-
-            $debugRuntime = Select-String `
-              -Path "dependencies.txt" `
-              -Pattern "ucrtbased.dll|vcruntime.*d.dll|msvcp.*d.dll"
-
-            if ($debugRuntime) {
-              Write-Error "Debug runtime dependency detected!"
-              Get-Content "dependencies.txt"
-              exit 1
-            }
-
-            Write-Host "No Debug CRT dependency detected."
-          }
-          else {
-            Write-Host "dumpbin not available; continuing."
+          if ($null -eq $dumpbin) {
+            Write-Host "dumpbin unavailable. Skipping dependency inspection."
+            exit 0
           }
 
-      - name: Verify package
-        shell: pwsh
-        run: |
-          if (!(Test-Path "package\HNStudio-Musik-AI.exe")) {
-            Write-Error "Final EXE is missing"
+          dumpbin /DEPENDENTS $exe | Out-File "dependencies.txt"
+
+          Get-Content "dependencies.txt"
+
+          $debugRuntime = Select-String `
+            -Path "dependencies.txt" `
+            -Pattern "ucrtbased.dll|vcruntime.*d.dll|msvcp.*d.dll"
+
+          if ($debugRuntime) {
+            Write-Error "Debug CRT dependency detected."
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "PACKAGE"
-          Write-Host "=============================="
-
-          Get-ChildItem `
-            "package" `
-            -Recurse |
-            Select-Object FullName, Length
+          Write-Host "No Debug CRT dependency found."
 
       - name: Create ZIP
         shell: pwsh
@@ -232,17 +171,15 @@ jobs:
           Compress-Archive `
             -Path "package\*" `
             -DestinationPath $zip `
-            -CompressionLevel Optimal
+            -CompressionLevel Optimal `
+            -Force
 
           if (!(Test-Path $zip)) {
             Write-Error "ZIP creation failed"
             exit 1
           }
 
-          Write-Host ""
-          Write-Host "ZIP CREATED:"
-          Write-Host $zip
-          Write-Host "Size: $((Get-Item $zip).Length) bytes"
+          Write-Host "ZIP created successfully."
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
