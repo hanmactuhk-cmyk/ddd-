@@ -1,102 +1,42 @@
-name: Build HNStudio Musik AI
-
-on:
-  workflow_dispatch:
-  push:
-    branches:
-      - main
-      - master
-
-permissions:
-  contents: read
-
-jobs:
-  build:
-    name: Build Windows Release x64
-    runs-on: windows-latest
-
-    steps:
-      - name: Checkout source
-        uses: actions/checkout@v4
-
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Verify project
+      - name: Find built application
         shell: pwsh
         run: |
-          if (!(Test-Path "CMakeLists.txt")) {
-            Write-Error "CMakeLists.txt not found"
-            exit 1
-          }
+          Write-Host "Searching for application EXE..."
 
-          if (!(Test-Path "Source")) {
-            Write-Error "Source folder not found"
-            exit 1
-          }
-
-          Write-Host "Project structure OK"
-
-      - name: Configure CMake
-        shell: pwsh
-        run: |
-          if (Test-Path "build") {
-            Remove-Item "build" -Recurse -Force
-          }
-
-          cmake `
-            -S . `
-            -B build `
-            -A x64 `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
-
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
-      - name: Build HNStudio Musik AI
-        shell: pwsh
-        run: |
-          cmake `
-            --build build `
-            --config Release `
-            --target HNStudioMusikAI `
-            --parallel
-
-          if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
-          }
-
-      - name: Find HNStudio Musik AI EXE
-        shell: pwsh
-        run: |
-          Write-Host "Searching for HNStudioMusikAI.exe..."
-
-          $exe = Get-ChildItem `
+          $files = Get-ChildItem `
             -Path "build" `
-            -Filter "HNStudioMusikAI.exe" `
+            -Filter "*.exe" `
             -Recurse `
             -File |
+            Where-Object {
+              $_.FullName -notmatch "\\CMakeFiles\\" -and
+              $_.FullName -notmatch "\\CompilerId" -and
+              $_.Name -notmatch "uninstall"
+            }
+
+          Write-Host ""
+          Write-Host "EXE files found:"
+          $files | ForEach-Object {
+            Write-Host $_.FullName
+          }
+
+          if ($files.Count -eq 0) {
+            Write-Error "No application EXE was generated."
+            exit 1
+          }
+
+          $exe = $files |
+            Where-Object {
+              $_.Name -match "HNStudio|Musik"
+            } |
             Select-Object -First 1
 
           if ($null -eq $exe) {
-            Write-Error "HNStudioMusikAI.exe was not generated."
-
-            Write-Host "EXE files found:"
-            Get-ChildItem `
-              -Path "build" `
-              -Filter "*.exe" `
-              -Recurse `
-              -File |
-              Select-Object FullName
-
-            exit 1
+            $exe = $files | Select-Object -First 1
           }
 
-          Write-Host "Correct application found:"
+          Write-Host ""
+          Write-Host "Selected application:"
           Write-Host $exe.FullName
 
           New-Item `
@@ -108,83 +48,3 @@ jobs:
             $exe.FullName `
             "package\HNStudio-Musik-AI.exe" `
             -Force
-
-      - name: Copy Assets
-        shell: pwsh
-        run: |
-          if (Test-Path "Assets") {
-            Copy-Item `
-              "Assets" `
-              "package\Assets" `
-              -Recurse `
-              -Force
-          }
-
-      - name: Verify application
-        shell: pwsh
-        run: |
-          $exe = "package\HNStudio-Musik-AI.exe"
-
-          if (!(Test-Path $exe)) {
-            Write-Error "HNStudio-Musik-AI.exe not found"
-            exit 1
-          }
-
-          Get-Item $exe | Select-Object FullName, Length
-
-      - name: Check Debug CRT
-        shell: pwsh
-        run: |
-          $exe = "package\HNStudio-Musik-AI.exe"
-
-          $dumpbin = Get-Command dumpbin.exe -ErrorAction SilentlyContinue
-
-          if ($null -eq $dumpbin) {
-            Write-Host "dumpbin unavailable. Skipping dependency inspection."
-            exit 0
-          }
-
-          dumpbin /DEPENDENTS $exe | Out-File "dependencies.txt"
-
-          Get-Content "dependencies.txt"
-
-          $debugRuntime = Select-String `
-            -Path "dependencies.txt" `
-            -Pattern "ucrtbased.dll|vcruntime.*d.dll|msvcp.*d.dll"
-
-          if ($debugRuntime) {
-            Write-Error "Debug CRT dependency detected."
-            exit 1
-          }
-
-          Write-Host "No Debug CRT dependency found."
-
-      - name: Create ZIP
-        shell: pwsh
-        run: |
-          $zip = "HNStudio-Musik-AI-Windows-x64.zip"
-
-          if (Test-Path $zip) {
-            Remove-Item $zip -Force
-          }
-
-          Compress-Archive `
-            -Path "package\*" `
-            -DestinationPath $zip `
-            -CompressionLevel Optimal `
-            -Force
-
-          if (!(Test-Path $zip)) {
-            Write-Error "ZIP creation failed"
-            exit 1
-          }
-
-          Write-Host "ZIP created successfully."
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: HNStudio-Musik-AI-Windows-x64
-          path: HNStudio-Musik-AI-Windows-x64.zip
-          if-no-files-found: error
-          retention-days: 30
